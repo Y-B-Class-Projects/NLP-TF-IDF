@@ -1,4 +1,8 @@
+import collections
 import datetime
+
+from gensim.similarities.docsim import query_shard
+
 import util
 import math
 from tabulate import tabulate
@@ -7,6 +11,8 @@ from collections import Counter
 import numpy as np
 from scipy import spatial
 from tqdm import tqdm
+import textwrap
+import pandas as pd
 
 
 def make_dictionary(file):
@@ -17,62 +23,94 @@ def make_dictionary(file):
     return words
 
 
-def main():
-    docs_files = ['data\\' + file for file in os.listdir('data') if file.endswith(".txt")]
-    query_files = ['query\\' + file for file in os.listdir('query') if file.endswith(".txt")]
-    all_files = docs_files[:10000] + query_files
+def calculateTF(wordset, bow, avdl):
+    b = 0.75
+    termfreq_diz = dict.fromkeys(wordset, 0)
+    counter1 = dict(collections.Counter(bow))
+    for w in bow:
+        termfreq_diz[w] = counter1[w] / ((1 - b) + b * len(bow) / avdl)
+    return termfreq_diz
 
-    all_words = []
+
+def calculate_IDF(wordset, bow):
+    d_bow = {'bow_{}'.format(i): list(set(b)) for i, b in enumerate(bow)}
+    N = len(d_bow.keys())
+    l_bow = []
+    for b in d_bow.values():
+        l_bow += b
+    counter = dict(collections.Counter(l_bow))
+    idf_diz = dict.fromkeys(wordset, 0)
+    for w in wordset:
+        idf_diz[w] = np.log((1 + N) / (1 + counter[w])) + 1
+    return idf_diz
+
+
+def calculate_TF_IDF(wordset, tf_diz, idf_diz):
+    tf_idf_diz = dict.fromkeys(wordset, 0)
+    for w in wordset:
+        tf_idf_diz[w] = tf_diz[w] * idf_diz[w]
+    tdidf_values = list(tf_idf_diz.values())
+    return tdidf_values
+
+
+def main():
+    query_str = "ליאונל מסי"
+    docs_files = ['data\\' + file for file in os.listdir('data') if file.endswith(".txt")]
+    #query_files = ['query\\' + file for file in os.listdir('query') if file.endswith(".txt")]
+    all_files = docs_files[1:1000]
+
+    files_words = {}
+    for file in tqdm(all_files):
+        files_words[file] = make_dictionary(file)
+    files_words["Query"] = query_str.split()
+
+    all_words = query_str.split()
     for file in tqdm(all_files):
         all_words += make_dictionary(file)
     all_words = Counter(all_words).most_common()
 
-    count_words = []
+    all_words_temp = []
     for word in tqdm(all_words):
-        if word[1] > 111 and len(word[0]) > 1 and word[0] not in util.get_stop_words():
-            count_words += [[word[0], word[1]]]
-    print("Total words", len(count_words))
+        if word[1] > 5 and len(word[0]) > 1 and word[0] not in util.get_stop_words():
+            all_words_temp += [word[0]]
+    all_words = all_words_temp
+    #print(all_words)
 
-    tf = []
-    for file in tqdm(all_files):
-        file_list = []
-        file_words = make_dictionary(file)
-        for word in count_words:
-            file_list += [file_words.count(word[0])]
-        tf.append({'file': file, 'words': file_list})
-    print("done tf")
+    avdl = np.average([len(bow) for bow in list(files_words.values())])
 
-    df = []
-    for word_index in tqdm(range(len(count_words))):
-        df.append(sum([1 for doc in tf if doc['words'][word_index] >= 1]))
-    print("done df")
-
-    m = len(tf)
-    idf = [math.log((m + 1) / df_i, 10) for df_i in df]
-    print("done idf")
-
-    tf_idf = []
-    for tf_doc in tqdm(tf):
-        value = np.multiply(tf_doc['words'], idf)
-        tf_idf.append({'file': tf_doc['file'], 'value': value})
-    print("done tf-idf")
+    IDF = calculate_IDF(all_words, list(files_words.values()))
+    #print(IDF)
 
     cosine_distances = []
     euclidean_distances = []
-    for doc in tqdm(tf_idf[:-1]):
-        cosine_distances.append([doc['file'], spatial.distance.cosine(list(tf_idf[-1]['value']), list(doc['value']))])
-        euclidean_distances.append([doc['file'], spatial.distance.euclidean(list(tf_idf[-1]['value']), list(doc['value']))])
+    query_TF_IDF = calculate_TF_IDF(all_words, calculateTF(all_words, list(files_words.get("Query")), avdl), IDF)
+    for file in tqdm(files_words):
+        if file != "Query":
+            doc_TF_IDF = calculate_TF_IDF(all_words, calculateTF(all_words, files_words[file], avdl), IDF)
+            cosine_distances.append([file, spatial.distance.cosine(query_TF_IDF, doc_TF_IDF)])
+            euclidean_distances.append([file, spatial.distance.euclidean(query_TF_IDF, doc_TF_IDF)])
+
 
     cosine_distances = sorted(cosine_distances, key=lambda x: x[1])
     cosine_distances = [it for it in cosine_distances if it[1] != 0]
     euclidean_distances = sorted(euclidean_distances, key=lambda x: x[1])
+    euclidean_distances = [it for it in euclidean_distances if it[1] != 0]
 
-    print(tabulate(cosine_distances[:10], headers=['file','cosine distances'], tablefmt='fancy_grid'))
-    print(tabulate(euclidean_distances[:10], headers=['file','euclidean distances'], tablefmt='fancy_grid'))
+    print(tabulate(cosine_distances[:10], headers=['file', 'cosine distances'], tablefmt='fancy_grid'))
+    print(tabulate(euclidean_distances[:10], headers=['file', 'euclidean distances'], tablefmt='fancy_grid'))
+
+    print(cosine_distances[0][0], ":")
+    with open(cosine_distances[0][0], 'r', encoding='utf-8') as f:
+        for line in f:
+            print('\n'.join(textwrap.wrap(line, 100, break_long_words=False)))
+    print(euclidean_distances[0][0], ":")
+    with open(euclidean_distances[0][0], 'r', encoding='utf-8') as f:
+       for line in f:
+           print('\n'.join(textwrap.wrap(line, 100, break_long_words=False)))
 
 
 if __name__ == '__main__':
     tic = datetime.datetime.now()
     main()
     toc = datetime.datetime.now()
-    print((toc - tic))
+    print('\n' + str((toc - tic)))
